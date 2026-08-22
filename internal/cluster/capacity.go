@@ -23,14 +23,20 @@ type CapacitySnapshot struct {
 
 func Snapshot(ctx context.Context, store *sqlite.Store, tenantID, clusterID string) (CapacitySnapshot, error) {
 	var snapshot CapacitySnapshot
-	if err := store.DB().QueryRowContext(ctx, `SELECT id,capacity_gpu,reserved_gpu,version FROM clusters WHERE id=? AND tenant_id=?`, clusterID, tenantID).Scan(&snapshot.ClusterID, &snapshot.CapacityGPU, &snapshot.ReservedGPU, &snapshot.Version); err != nil {
-		if err == sql.ErrNoRows {
-			return CapacitySnapshot{}, domain.ErrNotFound
+	err := store.RunReadOnly(ctx, func(tx *sql.Tx) error {
+		if err := tx.QueryRowContext(ctx, `SELECT id,capacity_gpu,reserved_gpu,version FROM clusters WHERE id=? AND tenant_id=?`, clusterID, tenantID).Scan(&snapshot.ClusterID, &snapshot.CapacityGPU, &snapshot.ReservedGPU, &snapshot.Version); err != nil {
+			if err == sql.ErrNoRows {
+				return domain.ErrNotFound
+			}
+			return fmt.Errorf("read capacity: %w", err)
 		}
-		return CapacitySnapshot{}, fmt.Errorf("read capacity: %w", err)
-	}
-	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(CASE WHEN status='ready' THEN 1 ELSE 0 END),0) FROM nodes WHERE cluster_id=?`, clusterID).Scan(&snapshot.Nodes, &snapshot.ReadyNodes); err != nil {
-		return CapacitySnapshot{}, fmt.Errorf("read node capacity: %w", err)
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(CASE WHEN status='ready' THEN 1 ELSE 0 END),0) FROM nodes WHERE cluster_id=?`, clusterID).Scan(&snapshot.Nodes, &snapshot.ReadyNodes); err != nil {
+			return fmt.Errorf("read node capacity: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return CapacitySnapshot{}, err
 	}
 	snapshot.FreeGPU = snapshot.CapacityGPU - snapshot.ReservedGPU
 	snapshot.CapturedAt = time.Now().UTC()
