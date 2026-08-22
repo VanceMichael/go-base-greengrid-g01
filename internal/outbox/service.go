@@ -60,11 +60,12 @@ func (s *Service) Claim(ctx context.Context, owner string, now time.Time) (domai
 }
 
 func (s *Service) Finish(ctx context.Context, owner, eventID string, sendErr error) error {
-	return s.store.WithTx(ctx, func(tx *sql.Tx) error {
+	cleanupContext := context.WithoutCancel(ctx)
+	return s.store.WithTx(cleanupContext, func(tx *sql.Tx) error {
 		var tenantID string
 		var attempts int
 		var status, leaseOwner string
-		if err := tx.QueryRowContext(ctx, `SELECT tenant_id,attempts,status,COALESCE(lease_owner,'') FROM outbox_events WHERE id=?`, eventID).Scan(&tenantID, &attempts, &status, &leaseOwner); err != nil {
+		if err := tx.QueryRowContext(cleanupContext, `SELECT tenant_id,attempts,status,COALESCE(lease_owner,'') FROM outbox_events WHERE id=?`, eventID).Scan(&tenantID, &attempts, &status, &leaseOwner); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return domain.ErrNotFound
 			}
@@ -85,9 +86,9 @@ func (s *Service) Finish(ctx context.Context, owner, eventID string, sendErr err
 		var result sql.Result
 		var err error
 		if sendErr != nil && nextStatus == "retry" {
-			result, err = tx.ExecContext(ctx, `UPDATE outbox_events SET status=?,attempts=?,lease_owner=NULL,lease_until=NULL,next_attempt_at=? WHERE id=? AND status='sending' AND lease_owner=?`, nextStatus, attempts, time.Now().UTC().Add(time.Duration(attempts)*time.Second).Format(time.RFC3339Nano), eventID, owner)
+			result, err = tx.ExecContext(cleanupContext, `UPDATE outbox_events SET status=?,attempts=?,lease_owner=NULL,lease_until=NULL,next_attempt_at=? WHERE id=? AND status='sending' AND lease_owner=?`, nextStatus, attempts, time.Now().UTC().Add(time.Duration(attempts)*time.Second).Format(time.RFC3339Nano), eventID, owner)
 		} else {
-			result, err = tx.ExecContext(ctx, `UPDATE outbox_events SET status=?,attempts=?,lease_owner=NULL,lease_until=NULL WHERE id=? AND status='sending' AND lease_owner=?`, nextStatus, attempts, eventID, owner)
+			result, err = tx.ExecContext(cleanupContext, `UPDATE outbox_events SET status=?,attempts=?,lease_owner=NULL,lease_until=NULL WHERE id=? AND status='sending' AND lease_owner=?`, nextStatus, attempts, eventID, owner)
 		}
 		if err != nil {
 			return err
@@ -100,7 +101,7 @@ func (s *Service) Finish(ctx context.Context, owner, eventID string, sendErr err
 		if sendErr != nil {
 			details = sendErr.Error()
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO audit_events(id,tenant_id,actor_id,aggregate_type,aggregate_id,action,result,request_id,details,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, uuid.NewString(), tenantID, owner, "outbox", eventID, "finish", nextStatus, eventID, details, time.Now().UTC().Format(time.RFC3339Nano))
+		_, err = tx.ExecContext(cleanupContext, `INSERT INTO audit_events(id,tenant_id,actor_id,aggregate_type,aggregate_id,action,result,request_id,details,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, uuid.NewString(), tenantID, owner, "outbox", eventID, "finish", nextStatus, eventID, details, time.Now().UTC().Format(time.RFC3339Nano))
 		return err
 	})
 }
