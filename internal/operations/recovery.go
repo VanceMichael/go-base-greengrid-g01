@@ -22,14 +22,21 @@ func (r *RecoveryService) RecoverJobs(ctx context.Context, tenantID, actorID, re
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var actions []RecoveryAction
+	var candidates []struct{ id, status string }
 	for rows.Next() {
 		var id, status string
 		if err := rows.Scan(&id, &status); err != nil {
+			_ = rows.Close()
 			return nil, err
 		}
-		action, err := r.recoverOne(ctx, tenantID, actorID, requestID, id, status)
+		candidates = append(candidates, struct{ id, status string }{id: id, status: status})
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	var actions []RecoveryAction
+	for _, candidate := range candidates {
+		action, err := r.recoverOne(ctx, tenantID, actorID, requestID, candidate.id, candidate.status)
 		if err != nil {
 			return nil, err
 		}
