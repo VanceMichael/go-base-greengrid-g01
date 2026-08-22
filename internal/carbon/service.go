@@ -70,7 +70,12 @@ func (s *Service) Approve(ctx context.Context, tenantID, actorID, reportID strin
 		if n != 1 {
 			return domain.ErrConflict
 		}
-		return audit(tx, tenantID, actorID, "carbon_report", reportID, "approve", requestID, "approved")
+		if err := audit(tx, tenantID, actorID, "carbon_report", reportID, "approve", requestID, "approved"); err != nil {
+			return err
+		}
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		_, err = tx.ExecContext(ctx, `INSERT INTO outbox_events(id,tenant_id,kind,aggregate_id,payload,status,attempts,next_attempt_at,created_at) VALUES(?,?,?,?,?,'pending',0,?,?)`, uuid.NewString(), tenantID, "carbon_report.approved", reportID, `{"status":"approved"}`, now, now)
+		return err
 	})
 }
 
