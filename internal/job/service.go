@@ -135,7 +135,8 @@ func (s *Service) Start(ctx context.Context, workerID, jobID string, expectedVer
 func (s *Service) Finish(ctx context.Context, workerID, jobID string, expectedVersion int64, success bool, message, requestID string) error {
 	return s.store.WithTx(ctx, func(tx *sql.Tx) error {
 		var tenantID, status, owner string
-		if err := tx.QueryRowContext(ctx, `SELECT tenant_id,status FROM jobs WHERE id=?`, jobID).Scan(&tenantID, &status); err != nil {
+		var attemptNo int
+		if err := tx.QueryRowContext(ctx, `SELECT tenant_id,status,attempts FROM jobs WHERE id=?`, jobID).Scan(&tenantID, &status, &attemptNo); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return domain.ErrNotFound
 			}
@@ -166,7 +167,7 @@ func (s *Service) Finish(ctx context.Context, workerID, jobID string, expectedVe
 		if _, err := tx.ExecContext(ctx, `DELETE FROM leases WHERE resource_type='job' AND resource_id=? AND owner=?`, jobID, workerID); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO job_attempts(id,job_id,attempt_no,worker_id,status,error_message,started_at,finished_at) VALUES(?,?,?,?,?,?,?,?)`, uuid.NewString(), jobID, 1, workerID, string(to), nullable(message), time.Now().UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO job_attempts(id,job_id,attempt_no,worker_id,status,error_message,started_at,finished_at) VALUES(?,?,?,?,?,?,?,?)`, uuid.NewString(), jobID, attemptNo, workerID, string(to), nullable(message), time.Now().UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 			return err
 		}
 		return audit(tx, tenantID, workerID, "job", jobID, "finish", requestID, string(to))
